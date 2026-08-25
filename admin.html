@@ -1,0 +1,9 @@
+<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>إدارة PE Platform</title>
+<style>body{font-family:Arial;max-width:1100px;margin:30px auto;padding:15px}table{width:100%;border-collapse:collapse}td,th{border:1px solid #ddd;padding:8px}button{padding:8px;margin:3px}.ok{color:green}</style>
+<h1>لوحة إدارة PE Platform Algeria</h1><p>مراجعة إثباتات دفع 1000 دج وتفعيل الحسابات بشكل دائم.</p><button onclick="load()">تحديث</button><div id=o>جارٍ التحميل...</div>
+<script>
+const t=localStorage.getItem('pe_access_token');const API=location.origin;
+async function api(p,o={}){o.headers=Object.assign({'Authorization':'Bearer '+t,'Content-Type':'application/json'},o.headers||{});const r=await fetch(API+p,o);const d=await r.json();if(!r.ok)throw Error(d.error||'خطأ');return d}
+async function load(){try{const d=await api('/api/v1/admin/payments');o.innerHTML='<table><tr><th>المعلم</th><th>البريد</th><th>المبلغ</th><th>الحالة</th><th>التاريخ</th><th>الإجراء</th></tr>'+d.items.map(x=>`<tr><td>${x.users?.name||''}</td><td>${x.users?.email||''}</td><td>${x.amount_dzd} دج</td><td>${x.status}</td><td>${new Date(x.created_at).toLocaleString('ar-DZ')}</td><td>${x.status==='PENDING'?`<button onclick="act('${x.id}','approve')">اعتماد وتفعيل</button><button onclick="act('${x.id}','reject')">رفض</button>`:'-'}</td></tr>`).join('')+'</table>'}catch(e){o.textContent=e.message}}
+async function act(id,a){let note='';if(a==='reject'){note=prompt('سبب الرفض (اختياري):')||''}try{await api('/api/v1/admin/payments/'+id+'/'+a,{method:'POST',body:JSON.stringify({note})});load()}catch(e){alert(e.message)}}load();
+</script></html>
