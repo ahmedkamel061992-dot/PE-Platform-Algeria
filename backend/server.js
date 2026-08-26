@@ -1,4 +1,3 @@
-
 require('dotenv').config();
 const express=require('express'),cors=require('cors'),helmet=require('helmet'),bcrypt=require('bcryptjs'),jwt=require('jsonwebtoken'),multer=require('multer'),path=require('path'),fs=require('fs');
 const {createClient}=require('@supabase/supabase-js');
@@ -20,6 +19,7 @@ async function auth(req,res,next){try{const h=req.headers.authorization||'';if(!
 const admin=(req,res,next)=>req.dbUser?.role==='ADMIN'?next():res.status(403).json({error:'غير مصرح.'});
 app.get('/health',(req,res)=>res.status(200).json({ok:true,service:'pe-platform-algeria',time:new Date().toISOString()}));
 app.get('/api/v1/health',(req,res)=>res.json({ok:true,service:'pe-platform-algeria',time:new Date().toISOString()}));
+app.get('/',(req,res)=>res.sendFile(path.join(__dirname,'..','index.html')));
 
 app.post('/api/v1/auth/register',async(req,res)=>{
  try{const s=z.object({name:z.string().min(2).max(120),email:z.string().email(),password:z.string().min(8).max(128)}).parse(req.body);
