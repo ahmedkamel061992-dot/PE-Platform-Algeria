@@ -18,6 +18,7 @@ const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:8*1024*1024
 const sign=u=>jwt.sign({sub:u.id,role:u.role,status:u.status},process.env.JWT_SECRET,{expiresIn:'7d'});
 async function auth(req,res,next){try{const h=req.headers.authorization||'';if(!h.startsWith('Bearer '))return res.status(401).json({error:'يجب تسجيل الدخول.'});req.user=jwt.verify(h.slice(7),process.env.JWT_SECRET);const {data:u,error}=await supabase.from('users').select('id,name,email,role,status,activated_at').eq('id',req.user.sub).single();if(error||!u)return res.status(401).json({error:'الحساب غير موجود.'});req.dbUser=u;next()}catch(e){res.status(401).json({error:'جلسة الدخول غير صالحة.'})}}
 const admin=(req,res,next)=>req.dbUser?.role==='ADMIN'?next():res.status(403).json({error:'غير مصرح.'});
+app.get('/health',(req,res)=>res.status(200).json({ok:true,service:'pe-platform-algeria',time:new Date().toISOString()}));
 app.get('/api/v1/health',(req,res)=>res.json({ok:true,service:'pe-platform-algeria',time:new Date().toISOString()}));
 
 app.post('/api/v1/auth/register',async(req,res)=>{
@@ -67,4 +68,4 @@ app.get('/api/v1/app',auth,(req,res)=>{
 app.get('/admin.html',auth,admin,(req,res)=>res.sendFile(path.join(__dirname,'..','admin.html')));
 
 app.use((err,req,res,next)=>{console.error(err);res.status(500).json({error:'حدث خطأ في الخادم.'})});
-const port=Number(process.env.PORT||10000);app.listen(port,()=>console.log(`PE backend listening on ${port}`));
+const port=Number(process.env.PORT||10000);app.listen(port,'0.0.0.0',()=>console.log(`PE backend listening on ${port}`));
