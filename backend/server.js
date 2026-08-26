@@ -61,11 +61,14 @@ app.post('/api/v1/admin/payments/:id/reject',auth,admin,async(req,res)=>{
  const now=new Date().toISOString();await supabase.from('payment_requests').update({status:'REJECTED',admin_note:note,reviewed_by:req.dbUser.id,reviewed_at:now}).eq('id',req.params.id);await supabase.from('users').update({status:'REJECTED',updated_at:now}).eq('id',p.user_id);res.json({ok:true,message:'تم رفض الطلب.'});
 });
 
+// The real platform is the original 18 MB index.html. Keep it byte-for-byte intact;
+// this protected endpoint is the only authenticated entry point for the application.
 app.get('/api/v1/app',auth,(req,res)=>{
  if(req.dbUser.status!=='ACTIVE')return res.status(403).json({error:'الحساب غير مفعل. لا يمكن فتح المنصة قبل الموافقة على الدفع.'});
- res.setHeader('Content-Type','text/html; charset=utf-8');res.sendFile(path.join(__dirname,'..','app.html'));
+ res.setHeader('Content-Type','text/html; charset=utf-8');
+ res.sendFile(path.join(__dirname,'..','index.html'));
 });
-app.get('/admin.html',auth,admin,(req,res)=>res.sendFile(path.join(__dirname,'..','admin.html')));
+app.get('/admin.html',auth,admin,(req,res)=>res.sendFile(path.join(__dirname,'admin.html')));
 
 app.use((err,req,res,next)=>{console.error(err);res.status(500).json({error:'حدث خطأ في الخادم.'})});
 const port=Number(process.env.PORT||10000);app.listen(port,'0.0.0.0',()=>console.log(`PE backend listening on ${port}`));
