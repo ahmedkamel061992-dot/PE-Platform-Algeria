@@ -11,7 +11,12 @@ const publicUser=u=>({id:u.id,name:u.name,email:u.email,role:u.role,status:u.sta
 const sign=u=>jwt.sign({sub:String(u.id),email:normalizeEmail(u.email),role:u.role},process.env.JWT_SECRET,{expiresIn:'7d'});
 async function findUserFromToken(p){
  const ids=[p.sub,p.userId,p.user_id,p.uid].filter(Boolean).map(String);
- for(const id of ids){const r=await supabase.from('users').select('id,name,email,password_hash,role,status,activated_at,trial_started_at').eq('id',id).maybeSingle();if(r.data)return r.data;}
+ for(const id of ids){
+   const rpc=await supabase.rpc('find_user_by_id',{p_id:id});
+   if(!rpc.error && rpc.data){const row=Array.isArray(rpc.data)?rpc.data[0]:rpc.data;if(row)return row}
+   const r=await supabase.from('users').select('id,name,email,password_hash,role,status,activated_at,trial_started_at').eq('id',id).maybeSingle();
+   if(r.data)return r.data;
+ }
  const emails=[p.email,p.userEmail,p.user_email].filter(Boolean).map(normalizeEmail);
  for(const email of emails){const r=await supabase.from('users').select('id,name,email,password_hash,role,status,activated_at,trial_started_at').eq('email',email).maybeSingle();if(r.data)return r.data;}
  return null;
