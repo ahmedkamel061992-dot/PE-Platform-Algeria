@@ -18,10 +18,17 @@ const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:8*1024*1024
 const sign=u=>jwt.sign({sub:u.id,role:u.role,status:u.status},process.env.JWT_SECRET,{expiresIn:'7d'});
 async function auth(req,res,next){try{const h=req.headers.authorization||'';if(!h.startsWith('Bearer '))return res.status(401).json({error:'يجب تسجيل الدخول.'});req.user=jwt.verify(h.slice(7),process.env.JWT_SECRET);const {data:u,error}=await supabase.from('users').select('id,name,email,role,status,activated_at').eq('id',req.user.sub).single();if(error||!u)return res.status(401).json({error:'الحساب غير موجود.'});req.dbUser=u;next()}catch(e){res.status(401).json({error:'جلسة الدخول غير صالحة.'})}}
 const admin=(req,res,next)=>req.dbUser?.role==='ADMIN'?next():res.status(403).json({error:'غير مصرح.'});
-// Render HTTP health check: must be a fast unauthenticated 2xx response.
 const healthHandler=(req,res)=>res.status(200).json({ok:true,service:'pe-platform-algeria',time:new Date().toISOString()});
 app.get('/health',healthHandler);
 app.get('/api/v1/health',healthHandler);
+
+// Serve the actual platform frontend from the repository root.
+// Render runs this service with rootDir=backend, while index.html is one level above backend.
+const frontendPath=path.join(__dirname,'..','index.html');
+app.get('/',(req,res)=>{
+ if(fs.existsSync(frontendPath)) return res.sendFile(frontendPath);
+ return res.status(500).send('ملف واجهة المنصة index.html غير موجود على الخادم.');
+});
 
 app.post('/api/v1/auth/register',async(req,res)=>{
  try{const s=z.object({name:z.string().min(2).max(120),email:z.string().email(),password:z.string().min(8).max(128)}).parse(req.body);
@@ -65,11 +72,10 @@ app.post('/api/v1/admin/payments/:id/reject',auth,admin,async(req,res)=>{
 
 app.get('/api/v1/app',auth,(req,res)=>{
  if(req.dbUser.status!=='ACTIVE')return res.status(403).json({error:'الحساب غير مفعل. لا يمكن فتح المنصة قبل الموافقة على الدفع.'});
- res.setHeader('Content-Type','text/html; charset=utf-8');res.sendFile(path.join(__dirname,'..','app.html'));
+ res.setHeader('Content-Type','text/html; charset=utf-8');res.sendFile(frontendPath);
 });
 app.get('/admin.html',auth,admin,(req,res)=>res.sendFile(path.join(__dirname,'..','admin.html')));
 
-// أداة اقتراح مذكرات (Educational_Platform_Algeria) — مفتاح سري بسيط بدل نظام حسابات SaaS الكامل
 const REQUIRED_MEMO_KEYS=['global','terminal','domain','cognitive','method','behavior','problem','objective','process','assessment','remediation','closure'];
 app.post('/api/v1/generate-memo',async(req,res)=>{
  try{
