@@ -22,12 +22,12 @@ const healthHandler=(req,res)=>res.status(200).json({ok:true,service:'pe-platfor
 app.get('/health',healthHandler);
 app.get('/api/v1/health',healthHandler);
 
-// Serve the actual platform frontend from the repository root.
-// Render runs this service with rootDir=backend, while index.html is one level above backend.
-const frontendPath=path.join(__dirname,'..','index.html');
+// The current platform frontend is kept separately from the old index.html.
+// Render runs this service with rootDir=backend, so the new file is one level above backend.
+const frontendPath=path.join(__dirname,'..','new-platform.html');
 app.get('/',(req,res)=>{
  if(fs.existsSync(frontendPath)) return res.sendFile(frontendPath);
- return res.status(500).send('ملف واجهة المنصة index.html غير موجود على الخادم.');
+ return res.status(500).send('ملف واجهة المنصة الجديدة new-platform.html غير موجود على الخادم.');
 });
 
 app.post('/api/v1/auth/register',async(req,res)=>{
