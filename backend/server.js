@@ -1,48 +1,88 @@
+
 require('dotenv').config();
-const express=require('express'),cors=require('cors'),helmet=require('helmet'),bcrypt=require('bcryptjs'),jwt=require('jsonwebtoken'),multer=require('multer'),path=require('path');
-const {createClient}=require('@supabase/supabase-js'); const {z}=require('zod');
-const required=['SUPABASE_URL','SUPABASE_SERVICE_ROLE_KEY','JWT_SECRET']; for(const k of required) if(!process.env[k]){console.error(`Missing ${k}`);process.exit(1)}
-const supabase=createClient(process.env.SUPABASE_URL,process.env.SUPABASE_SERVICE_ROLE_KEY,{auth:{persistSession:false,autoRefreshToken:false}}); const app=express();
-const TRIAL_MS=30*60*1000;
-app.use(helmet({crossOriginResourcePolicy:false,contentSecurityPolicy:false})); app.use(cors({origin:true,credentials:true})); app.use(express.json({limit:'1mb'}));
-const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:8*1024*1024}});
-const normalizeEmail=v=>String(v||'').trim().toLowerCase();
-const publicUser=u=>({id:u.id,name:u.name,email:u.email,role:u.role,status:u.status,activated_at:u.activated_at,trial_started_at:u.trial_started_at});
-const sign=u=>jwt.sign({sub:String(u.id),email:normalizeEmail(u.email),role:u.role},process.env.JWT_SECRET,{expiresIn:'7d'});
-async function findUserFromToken(p){
- const ids=[p.sub,p.userId,p.user_id,p.uid].filter(Boolean).map(String);
- for(const id of ids){
-   const rpc=await supabase.rpc('find_user_by_id',{p_id:id});
-   if(!rpc.error && rpc.data){const row=Array.isArray(rpc.data)?rpc.data[0]:rpc.data;if(row)return row}
-   const r=await supabase.from('users').select('id,name,email,password_hash,role,status,activated_at,trial_started_at').eq('id',id).maybeSingle();
-   if(r.data)return r.data;
- }
- const emails=[p.email,p.userEmail,p.user_email].filter(Boolean).map(normalizeEmail);
- for(const email of emails){const r=await supabase.from('users').select('id,name,email,password_hash,role,status,activated_at,trial_started_at').eq('email',email).maybeSingle();if(r.data)return r.data;}
- return null;
-}
-async function findUserByEmail(email){
- const normalized=normalizeEmail(email);
- const rpc=await supabase.rpc('find_teacher_by_email',{p_email:normalized});
- if(!rpc.error && rpc.data){return Array.isArray(rpc.data)?(rpc.data[0]||null):rpc.data;}
- const r=await supabase.from('users').select('id,name,email,password_hash,role,status,activated_at,trial_started_at').eq('email',normalized).maybeSingle();
- return r.data||null;
-}
-async function auth(req,res,next){try{const h=req.headers.authorization||'';if(!h.startsWith('Bearer '))return res.status(401).json({error:'يجب تسجيل الدخول.'});const p=jwt.verify(h.slice(7),process.env.JWT_SECRET);const user=await findUserFromToken(p);if(!user)return res.status(401).json({error:'الحساب غير موجود.',code:'ACCOUNT_NOT_FOUND'});req.dbUser=user;req.authPayload=p;next()}catch(e){console.error('AUTH',e);res.status(401).json({error:'جلسة الدخول غير صالحة.',code:'INVALID_SESSION'})}}
+const express=require('express'),cors=require('cors'),helmet=require('helmet'),bcrypt=require('bcryptjs'),jwt=require('jsonwebtoken'),multer=require('multer'),path=require('path'),fs=require('fs');
+const {createClient}=require('@supabase/supabase-js');
+const {z}=require('zod');
+
+const required=['SUPABASE_URL','SUPABASE_SERVICE_ROLE_KEY','JWT_SECRET'];
+for(const k of required) if(!process.env[k]) { console.error(`Missing ${k}`); process.exit(1); }
+const supabase=createClient(process.env.SUPABASE_URL,process.env.SUPABASE_SERVICE_ROLE_KEY,{auth:{persistSession:false}});
+const app=express();
+app.use(helmet({crossOriginResourcePolicy:false}));
+app.use(cors({origin:(process.env.ALLOWED_ORIGIN||'').split(',').map(s=>s.trim()).filter(Boolean),credentials:true}));
+app.use(express.json({limit:'1mb'}));
+
+const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:8*1024*1024},fileFilter:(req,file,cb)=>{
+ const ok=['image/jpeg','image/png','image/webp','application/pdf'].includes(file.mimetype); cb(ok?null:new Error('نوع الملف غير مسموح'),ok);
+}});
+const sign=u=>jwt.sign({sub:u.id,role:u.role,status:u.status},process.env.JWT_SECRET,{expiresIn:'7d'});
+async function auth(req,res,next){try{const h=req.headers.authorization||'';if(!h.startsWith('Bearer '))return res.status(401).json({error:'يجب تسجيل الدخول.'});req.user=jwt.verify(h.slice(7),process.env.JWT_SECRET);const {data:u,error}=await supabase.from('users').select('id,name,email,role,status,activated_at').eq('id',req.user.sub).single();if(error||!u)return res.status(401).json({error:'الحساب غير موجود.'});req.dbUser=u;next()}catch(e){res.status(401).json({error:'جلسة الدخول غير صالحة.'})}}
 const admin=(req,res,next)=>req.dbUser?.role==='ADMIN'?next():res.status(403).json({error:'غير مصرح.'});
-function trialInfo(user){if(user.role==='ADMIN'||user.status==='ACTIVE')return {allowed:true,remainingMs:null,expired:false};if(!user.trial_started_at)return {allowed:false,remainingMs:0,expired:true};const remaining=TRIAL_MS-(Date.now()-new Date(user.trial_started_at).getTime());return {allowed:remaining>0,remainingMs:Math.max(0,remaining),expired:remaining<=0};}
-async function startTrialIfNeeded(user){if(user.role!=='TEACHER'||user.status==='ACTIVE'||user.trial_started_at)return user;const now=new Date().toISOString();const u=await supabase.from('users').update({trial_started_at:now,updated_at:now}).eq('id',user.id).select('id,name,email,password_hash,role,status,activated_at,trial_started_at').maybeSingle();if(u.data)return u.data;const reread=await supabase.from('users').select('id,name,email,password_hash,role,status,activated_at,trial_started_at').eq('id',user.id).maybeSingle();return reread.data||user;}
-app.get('/health',(req,res)=>res.json({ok:true,service:'pe-platform-algeria'})); app.get('/api/v1/health',(req,res)=>res.json({ok:true}));
-app.get('/gateway.js',(req,res)=>res.type('application/javascript').set('Cache-Control','no-store').sendFile(path.join(__dirname,'gateway.js'))); app.get('/',(req,res)=>res.set('Cache-Control','no-store').sendFile(path.join(__dirname,'gateway.html')));
-app.post('/api/v1/auth/register',async(req,res)=>{try{const s=z.object({name:z.string().trim().min(2).max(120),email:z.string().trim().email(),password:z.string().min(8).max(128)}).parse(req.body);const email=normalizeEmail(s.email);const existing=await findUserByEmail(email);if(existing)return res.status(409).json({error:'هذا البريد الإلكتروني مسجل مسبقًا.',code:'EMAIL_EXISTS'});const {data:u,error}=await supabase.rpc('register_teacher',{p_name:s.name,p_email:email,p_password_hash:await bcrypt.hash(s.password,12)});if(error){if(error.code==='23505')return res.status(409).json({error:'هذا البريد الإلكتروني مسجل مسبقًا.',code:'EMAIL_EXISTS'});return res.status(400).json({error:`تعذر إنشاء الحساب: ${error.message}`})}let user=Array.isArray(u)?u[0]:u;if(!user)return res.status(400).json({error:'تعذر إنشاء الحساب.'});user=await startTrialIfNeeded(user);res.status(201).json({accessToken:sign(user),user:publicUser(user)})}catch(e){console.error('REGISTER',e);res.status(400).json({error:e.message||'بيانات غير صحيحة.'})}});
-app.post('/api/v1/auth/login',async(req,res)=>{try{const s=z.object({email:z.string().trim().email(),password:z.string().min(1)}).parse(req.body);const email=normalizeEmail(s.email);const u=await findUserByEmail(email);if(!u)return res.status(401).json({error:'البريد الإلكتروني أو كلمة المرور غير صحيحة.',code:'INVALID_CREDENTIALS'});const ok=await bcrypt.compare(s.password,u.password_hash);if(!ok)return res.status(401).json({error:'البريد الإلكتروني أو كلمة المرور غير صحيحة.',code:'INVALID_CREDENTIALS'});const user=await startTrialIfNeeded(u);const ti=trialInfo(user);if(user.role==='TEACHER'&&user.status!=='ACTIVE'&&!ti.allowed)return res.status(403).json({error:'انتهت الفترة التجريبية (30 دقيقة). أرسل وصل الدفع عبر واتساب لتفعيل الحساب.',code:'TRIAL_EXPIRED'});res.json({accessToken:sign(user),user:{...publicUser(user),trialRemainingMs:ti.remainingMs,trialAllowed:ti.allowed}})}catch(e){console.error('LOGIN',e);res.status(400).json({error:'بيانات غير صحيحة.'})}});
-app.get('/api/v1/me',auth,async(req,res)=>{const user=await startTrialIfNeeded(req.dbUser);const ti=trialInfo(user);if(user.role==='TEACHER'&&user.status!=='ACTIVE'&&!ti.allowed)return res.status(403).json({error:'انتهت الفترة التجريبية (30 دقيقة). أرسل وصل الدفع عبر واتساب لتفعيل الحساب.',code:'TRIAL_EXPIRED'});res.json({user:{...publicUser(user),activatedAt:user.activated_at,trialStartedAt:user.trial_started_at,trialRemainingMs:ti.remainingMs,trialAllowed:ti.allowed}})});
-app.post('/api/v1/payments/receipt',auth,upload.single('receipt'),async(req,res)=>{try{if(req.dbUser.role!=='TEACHER')return res.status(403).json({error:'هذه العملية للمعلمين فقط.'});if(!req.file)return res.status(400).json({error:'أرسل إثبات الدفع.'});if(req.dbUser.status==='ACTIVE')return res.status(409).json({error:'الحساب مفعل بالفعل.'});const bucket=process.env.SUPABASE_BUCKET||'payment-receipts';const ext=req.file.mimetype==='application/pdf'?'pdf':(req.file.mimetype.split('/')[1]||'bin').replace('jpeg','jpg');const storagePath=`${req.dbUser.id}/${Date.now()}.${ext}`;const up=await supabase.storage.from(bucket).upload(storagePath,req.file.buffer,{contentType:req.file.mimetype,upsert:false});if(up.error)throw new Error(`STORAGE: ${up.error.message}`);const {data:p,error}=await supabase.from('payment_requests').insert({user_id:req.dbUser.id,amount_dzd:1000,receipt_path:storagePath}).select('id,status').single();if(error)throw new Error(`PAYMENT_DB: ${error.message}`);const {error:ue}=await supabase.from('users').update({status:'PENDING_REVIEW',updated_at:new Date().toISOString()}).eq('id',req.dbUser.id);if(ue)throw new Error(`USER_UPDATE: ${ue.message}`);res.status(201).json({message:'تم إرسال إثبات الدفع إلى المسؤول للمراجعة.',payment:p})}catch(e){console.error('RECEIPT',e);res.status(500).json({error:`تعذر حفظ إثبات الدفع: ${e.message}`})}});
-app.get('/api/v1/admin/users',auth,admin,async(req,res)=>{const {data,error}=await supabase.from('users').select('id,name,email,role,status,created_at,activated_at,trial_started_at').eq('role','TEACHER').order('created_at',{ascending:false});if(error)return res.status(500).json({error:'تعذر جلب الحسابات.'});res.json({items:data||[]})});
-app.post('/api/v1/admin/users/:id/activate',auth,admin,async(req,res)=>{const now=new Date().toISOString();const {data:u,error}=await supabase.from('users').update({status:'ACTIVE',activated_at:now,updated_at:now}).eq('id',req.params.id).eq('role','TEACHER').select('id,name,email,status,activated_at').maybeSingle();if(error)return res.status(500).json({error:`تعذر تفعيل الحساب: ${error.message}`});if(!u)return res.status(404).json({error:'الحساب غير موجود.'});res.json({ok:true,message:'تم تفعيل الحساب بشكل دائم.',user:u})});
-app.post('/api/v1/admin/users/:id/deactivate',auth,admin,async(req,res)=>{const {data:u,error}=await supabase.from('users').update({status:'PENDING_PAYMENT',activated_at:null,updated_at:new Date().toISOString()}).eq('id',req.params.id).eq('role','TEACHER').select('id,name,email,status').maybeSingle();if(error)return res.status(500).json({error:`تعذر إيقاف الحساب: ${error.message}`});if(!u)return res.status(404).json({error:'الحساب غير موجود.'});res.json({ok:true,message:'تم إيقاف الحساب.',user:u})});
-app.get('/api/v1/admin/payments',auth,admin,async(req,res)=>{const {data,error}=await supabase.from('payment_requests').select('id,user_id,amount_dzd,status,admin_note,created_at,reviewed_at,users(name,email,status)').order('created_at',{ascending:false});if(error)return res.status(500).json({error:'تعذر جلب الطلبات.'});res.json({items:data||[]})});
-app.post('/api/v1/admin/payments/:id/approve',auth,admin,async(req,res)=>{const {data:p}=await supabase.from('payment_requests').select('id,user_id,status').eq('id',req.params.id).single();if(!p)return res.status(404).json({error:'الطلب غير موجود.'});if(p.status!=='PENDING')return res.status(409).json({error:'تمت مراجعة الطلب مسبقًا.'});const now=new Date().toISOString();const {error:e1}=await supabase.from('payment_requests').update({status:'APPROVED',reviewed_by:req.dbUser.id,reviewed_at:now}).eq('id',p.id);if(e1)return res.status(500).json({error:'تعذر اعتماد الدفع.'});const {error:e2}=await supabase.from('users').update({status:'ACTIVE',activated_at:now,updated_at:now}).eq('id',p.user_id);if(e2)return res.status(500).json({error:'تم اعتماد الدفع لكن تعذر تفعيل الحساب.'});res.json({ok:true,message:'تم اعتماد الدفع وتفعيل الحساب بشكل دائم.'})});
-app.post('/api/v1/admin/payments/:id/reject',auth,admin,async(req,res)=>{const note=String(req.body?.note||'').slice(0,500);const {data:p}=await supabase.from('payment_requests').select('id,user_id,status').eq('id',req.params.id).single();if(!p)return res.status(404).json({error:'الطلب غير موجود.'});if(p.status!=='PENDING')return res.status(409).json({error:'تمت مراجعة الطلب مسبقًا.'});const now=new Date().toISOString();await supabase.from('payment_requests').update({status:'REJECTED',admin_note:note,reviewed_by:req.dbUser.id,reviewed_at:now}).eq('id',p.id);await supabase.from('users').update({status:'REJECTED',updated_at:now}).eq('id',p.user_id);res.json({ok:true,message:'تم رفض الطلب.'})});
-app.get('/api/v1/app',auth,async(req,res)=>{const user=await startTrialIfNeeded(req.dbUser);const ti=trialInfo(user);if(user.role==='TEACHER'&&user.status!=='ACTIVE'&&!ti.allowed)return res.status(403).json({error:'انتهت الفترة التجريبية (30 دقيقة). أرسل وصل الدفع عبر واتساب لتفعيل الحساب.',code:'TRIAL_EXPIRED'});res.setHeader('Content-Type','text/html; charset=utf-8');res.sendFile(path.join(__dirname,'..','index.html'))}); app.get('/admin.html',auth,admin,(req,res)=>res.sendFile(path.join(__dirname,'admin.html')));
-app.use((err,req,res,next)=>{console.error(err);res.status(500).json({error:'حدث خطأ في الخادم.'})});const port=Number(process.env.PORT||10000);app.listen(port,'0.0.0.0',()=>console.log(`PE backend listening on ${port}`));
+app.get('/api/v1/health',(req,res)=>res.json({ok:true,service:'pe-platform-algeria',time:new Date().toISOString()}));
+
+app.post('/api/v1/auth/register',async(req,res)=>{
+ try{const s=z.object({name:z.string().min(2).max(120),email:z.string().email(),password:z.string().min(8).max(128)}).parse(req.body);
+ const hash=await bcrypt.hash(s.password,12);const {data:u,error}=await supabase.from('users').insert({name:s.name,email:s.email.toLowerCase(),password_hash:hash}).select('id,name,email,role,status,activated_at').single();
+ if(error)return res.status(error.code==='23505'?409:400).json({error:error.code==='23505'?'البريد الإلكتروني مستخدم بالفعل.':'تعذر إنشاء الحساب.'});
+ res.status(201).json({accessToken:sign(u),user:u});}catch(e){res.status(400).json({error:e.message||'بيانات غير صحيحة.'})}
+});
+app.post('/api/v1/auth/login',async(req,res)=>{
+ try{const s=z.object({email:z.string().email(),password:z.string()}).parse(req.body);const {data:u}=await supabase.from('users').select('*').eq('email',s.email.toLowerCase()).single();if(!u||!(await bcrypt.compare(s.password,u.password_hash)))return res.status(401).json({error:'البريد الإلكتروني أو كلمة المرور غير صحيحة.'});res.json({accessToken:sign(u),user:{id:u.id,name:u.name,email:u.email,role:u.role,status:u.status,activated_at:u.activated_at}})}catch(e){res.status(400).json({error:'بيانات غير صحيحة.'})}
+});
+app.get('/api/v1/me',auth,(req,res)=>res.json({user:{id:req.dbUser.id,name:req.dbUser.name,email:req.dbUser.email,role:req.dbUser.role,status:req.dbUser.status,activatedAt:req.dbUser.activated_at}}));
+
+app.post('/api/v1/payments/receipt',auth,upload.single('receipt'),async(req,res)=>{
+ try{if(req.dbUser.role!=='TEACHER')return res.status(403).json({error:'هذه العملية للمعلمين فقط.'});if(!req.file)return res.status(400).json({error:'أرسل إثبات الدفع.'});
+ if(req.dbUser.status==='ACTIVE')return res.status(409).json({error:'الحساب مفعل بالفعل.'});
+ const ext=req.file.mimetype==='application/pdf'?'pdf':req.file.mimetype.split('/')[1].replace('jpeg','jpg');
+ const storagePath=`${req.dbUser.id}/${Date.now()}.${ext}`;
+ const up=await supabase.storage.from(process.env.SUPABASE_BUCKET||'payment-receipts').upload(storagePath,req.file.buffer,{contentType:req.file.mimetype,upsert:false});
+ if(up.error)throw up.error;
+ const {data:p,error}=await supabase.from('payment_requests').insert({user_id:req.dbUser.id,amount_dzd:1000,receipt_path:storagePath}).select('id,status').single();
+ if(error)throw error;
+ await supabase.from('users').update({status:'PENDING_REVIEW',updated_at:new Date().toISOString()}).eq('id',req.dbUser.id);
+ res.status(201).json({message:'تم إرسال إثبات الدفع إلى المسؤول للمراجعة.',payment:p});
+ }catch(e){console.error(e);res.status(500).json({error:'تعذر حفظ إثبات الدفع.'})}
+});
+
+app.get('/api/v1/admin/payments',auth,admin,async(req,res)=>{
+ const {data,error}=await supabase.from('payment_requests').select('id,user_id,amount_dzd,status,admin_note,created_at,reviewed_at,users(name,email,status)').order('created_at',{ascending:false});
+ if(error)return res.status(500).json({error:'تعذر جلب الطلبات.'});res.json({items:data||[]});
+});
+app.post('/api/v1/admin/payments/:id/approve',auth,admin,async(req,res)=>{
+ const id=req.params.id;const {data:p}=await supabase.from('payment_requests').select('id,user_id,status').eq('id',id).single();if(!p)return res.status(404).json({error:'الطلب غير موجود.'});if(p.status!=='PENDING')return res.status(409).json({error:'تمت مراجعة الطلب مسبقًا.'});
+ const now=new Date().toISOString();const {error:e1}=await supabase.from('payment_requests').update({status:'APPROVED',reviewed_by:req.dbUser.id,reviewed_at:now}).eq('id',id);if(e1)return res.status(500).json({error:'تعذر اعتماد الدفع.'});
+ const {error:e2}=await supabase.from('users').update({status:'ACTIVE',activated_at:now,updated_at:now}).eq('id',p.user_id);if(e2)return res.status(500).json({error:'تم اعتماد الدفع لكن تعذر تفعيل الحساب.'});
+ res.json({ok:true,message:'تم اعتماد الدفع وتفعيل الحساب بشكل دائم.'});
+});
+app.post('/api/v1/admin/payments/:id/reject',auth,admin,async(req,res)=>{
+ const note=String(req.body?.note||'').slice(0,500);const {data:p}=await supabase.from('payment_requests').select('id,user_id,status').eq('id',req.params.id).single();if(!p)return res.status(404).json({error:'الطلب غير موجود.'});if(p.status!=='PENDING')return res.status(409).json({error:'تمت مراجعة الطلب مسبقًا.'});
+ const now=new Date().toISOString();await supabase.from('payment_requests').update({status:'REJECTED',admin_note:note,reviewed_by:req.dbUser.id,reviewed_at:now}).eq('id',req.params.id);await supabase.from('users').update({status:'REJECTED',updated_at:now}).eq('id',p.user_id);res.json({ok:true,message:'تم رفض الطلب.'});
+});
+
+app.get('/api/v1/app',auth,(req,res)=>{
+ if(req.dbUser.status!=='ACTIVE')return res.status(403).json({error:'الحساب غير مفعل. لا يمكن فتح المنصة قبل الموافقة على الدفع.'});
+ res.setHeader('Content-Type','text/html; charset=utf-8');res.sendFile(path.join(__dirname,'..','app.html'));
+});
+app.get('/admin.html',auth,admin,(req,res)=>res.sendFile(path.join(__dirname,'..','admin.html')));
+
+// أداة اقتراح مذكرات (Educational_Platform_Algeria) — مفتاح سري بسيط بدل نظام حسابات SaaS الكامل
+const REQUIRED_MEMO_KEYS=['global','terminal','domain','cognitive','method','behavior','problem','objective','process','assessment','remediation','closure'];
+app.post('/api/v1/generate-memo',async(req,res)=>{
+ try{
+  if((req.headers['x-memo-key']||'')!==(process.env.MEMO_TOOL_KEY||''))return res.status(401).json({error:'مفتاح الأداة غير صحيح.'});
+  const s=z.object({phase:z.string().min(1),level:z.string().optional().default(''),subject:z.string().min(1),stream:z.string().optional().default(''),unit:z.string().min(1)}).parse(req.body);
+  const prompt=`أنت خبير في المناهج الجزائرية للجيل الثاني (المقاربة بالكفاءات).\nاقترح محتوى مذكرة تربوية للبيانات التالية:\nالطور: ${s.phase}\nالمستوى: ${s.level||'غير محدد'}\nالمادة: ${s.subject}\nالشعبة: ${s.stream||'غير محدد'}\nالوحدة / المقطع: ${s.unit}\n\nأعد النتيجة بصيغة JSON فقط، بدون أي نص أو شرح خارج الكائن، وبالمفاتيح التالية بالضبط: global, terminal, domain, cognitive, method, behavior, problem, objective, process, assessment, remediation, closure.\nمهم: هذا اقتراح أولي سيراجعه الأستاذ يدويًا، فلا تختلق مراجع أو أرقام مناشير رسمية غير متأكد منها.`;
+  const g=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts:[{text:prompt}]}]})});
+  if(!g.ok){console.error(await g.text());return res.status(502).json({error:'تعذر الاتصال بخدمة الذكاء الاصطناعي.'})}
+  const gd=await g.json();
+  let text=(gd?.candidates?.[0]?.content?.parts?.[0]?.text||'').trim();
+  if(text.startsWith('```')){text=text.replace(/^```json?/i,'').replace(/```$/,'').trim()}
+  let parsed;try{parsed=JSON.parse(text)}catch{return res.status(502).json({error:'رد الذكاء الاصطناعي لم يكن بصيغة JSON صالحة.'})}
+  for(const k of REQUIRED_MEMO_KEYS)if(!(k in parsed))parsed[k]='';
+  res.json({raw:JSON.stringify(parsed)});
+ }catch(e){res.status(400).json({error:e.message||'بيانات غير صحيحة.'})}
+});
+
+app.use((err,req,res,next)=>{console.error(err);res.status(500).json({error:'حدث خطأ في الخادم.'})});
+const port=Number(process.env.PORT||10000);app.listen(port,()=>console.log(`PE backend listening on ${port}`));
